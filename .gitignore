@@ -6,3 +6,7 @@ data
 config/default.py
 migrations
 uploads/
+*.sublime-*
+.gitignore
+.DS_Store
+*/.DS_Store

@@ -367,9 +367,9 @@ def validate_username(username, check_db=True):
     return 'OK'
 
 def validate_email(email):
-    regex = re.compile("[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@(mail\.)?ustc\.edu\.cn")
+    regex = re.compile("[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+\.edu\.cn")
     if not regex.fullmatch(email):
-        return ('必须使用科大邮箱注册!')
+        return ('必须使用edu邮箱注册!')
     if User.query.filter_by(email=email).first():
         return ('此邮件地址已被注册！')
     return 'OK'
