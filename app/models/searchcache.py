@@ -1,6 +1,7 @@
 # This module has two classes: CourseSearchCache and ReviewSearchCache
 # Data inside shall be preprocessed with jieba, and stored in the database.
 # For now as we have jieba, we don't use ngram.
+import os
 from app import db, app
 from .course import Course
 from .review import Review
@@ -9,6 +10,8 @@ import html2text
 
 
 auto_update = app.config.get("UPDATE_SEARCH_CACHE", False)
+jieba.dt.tmp_dir = os.path.expanduser("~/.cache/jieba")
+os.makedirs(jieba.dt.tmp_dir, exist_ok=True)
 
 
 # To handle these queries:
@@ -16,7 +19,7 @@ auto_update = app.config.get("UPDATE_SEARCH_CACHE", False)
 # "数据分析与实践" -> "数据分析及实践"
 # "概率论和数理统计" -> "概率论与数理统计"
 def is_chinese_stop_char(c: str) -> bool:
-    STOP = ["与", "和", "及"]
+    STOP = ["与", "和", "及", "，", "、", "。", "：", "（", "）", "【", "】"]
     return c in STOP
 
 
@@ -85,9 +88,15 @@ class ReviewSearchCache(db.Model):
 
     @staticmethod
     def process_text(review: Review) -> str:
+        keywords = []
+        if review.course:
+            course_metadata_weight = 5  # course metadata match is more important than review content match
+            keywords = [CourseSearchCache.process_text(review.course) for _ in range(course_metadata_weight)]
         # convert HTML to plain text
         content = html2text.html2text(review.content)
-        return " ".join(jieba.cut_for_search(content))
+        review_keywords = " ".join(jieba.cut_for_search(content))
+        keywords.append(review_keywords)
+        return " ".join(keywords)
 
     @staticmethod
     def update(review: Review, follow_config=False, commit=True):

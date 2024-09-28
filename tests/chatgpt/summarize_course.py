@@ -1,72 +1,68 @@
 import sys
-sys.path.append('../..')  # fix import directory
+import os
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(project_root)
 
 from app import app, db
 from app.models import Review, Course, CourseRate
+from datetime import datetime
 
-from openai_helper import openai
-from prompt_generator import generate_summary_prompt, SUMMARY_EXPECTED_LENGTH
-
-import os
 import traceback
 import time
+import subprocess
+from multiprocessing import Pool
+from sqlalchemy.orm import sessionmaker
+from app.views.ai.summarize_course import get_summary_of_course, check_course_need_summary
 
 
-def get_chatgpt_completion(prompt):
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            { "role": "user", "content": prompt }
-        ]
-        )
-    return (response["choices"][0]["message"]["content"],
-            response["usage"]["prompt_tokens"],
-            response["usage"]["completion_tokens"])
+if not app.config['OPENAI_API_KEY']:
+    raise ValueError('OPENAI_API_KEY not found')
 
 
-def get_chatgpt_summary(course, prompt):
-    try:
-        start_time = time.time()
-        (completion, prompt_tokens, completion_tokens) = get_chatgpt_completion(prompt)
-        elapsed_time = time.time() - start_time
-
-        prompt_length = len(prompt)
-        print(f"Get summary of course #{course.id}, prompt_length {prompt_length}, prompt_tokens {prompt_tokens}, completion_tokens {completion_tokens}, time {elapsed_time}:")
-        print(completion)
-        return completion
-    except openai.error.APIConnectionError:
-        raise
-    except KeyboardInterrupt:
-        raise
-    except:
-        traceback.print_exc()
+def handle_summarize_course(course_id):
+    Session = sessionmaker(bind=db.engine)
+    session = Session()
+    course = session.query(Course).filter_by(id=course_id).first()
+    print("Summarizing course:", course, flush=True)
+    need_summary, summary = get_summary_of_course(course)
+    if not need_summary:
+        course.summary = None
+        session.commit()
+    # if a summary is needed but generation failed, do not update the database
+    if need_summary and summary:
+        course.summary = summary
+        course.summary_update_time = datetime.utcnow()
+        session.commit()
 
 
-def get_summary_of_course(course):
-    public_reviews = (Review.query.filter_by(course_id=course.id)
-        .filter(Review.is_hidden == False).filter(Review.is_blocked == False).filter(Review.only_visible_to_student == False)
-        .order_by(Review.upvote_count.desc(), Review.publish_time.desc())
-        .all()
-        )
-    if len(public_reviews) == 0:
-        return None
-    prompt = generate_summary_prompt(public_reviews)
-    if len(prompt) <= SUMMARY_EXPECTED_LENGTH:  # too short, no need to summarize
-        return prompt
-    else:
-        return get_chatgpt_summary(course, prompt)
+def invoke_summarize_course(course_id):
+    subprocess.run(["python3", sys.argv[0], str(course_id)])
 
 
 def get_summary_of_all_courses():
     print('Summarizing all courses...')
     courses = Course.query.join(CourseRate).filter(Course.id == CourseRate.id).order_by(CourseRate.review_count.desc()).filter(CourseRate.review_count > 0).all()
-    print('Iterating over ' + str(len(courses)) + ' courses...')
+    print(f'Iterating over {len(courses)} courses...')
+    course_ids_to_summarize = []
     for course in courses:
-        if not course.summary:
-            course.summary = get_summary_of_course(course)
-            db.session.commit()
+        if course.summary_update_time:
+            non_summarized_reviews = Review.query.filter_by(course_id=course.id).filter(Review.update_time >= course.summary_update_time).count()
+        else:
+            non_summarized_reviews = 1
+
+        if not course.summary or non_summarized_reviews > 0:
+            if check_course_need_summary(course):
+                course_ids_to_summarize.append(course.id)
+
+    print(f'Found {len(course_ids_to_summarize)} courses to summarize')
+    with Pool(processes=16) as p:
+        p.map(invoke_summarize_course, course_ids_to_summarize)
 
 
-print("Start summarizing reviews of all courses...")
-with app.app_context():
-    get_summary_of_all_courses()
+if len(sys.argv) == 2 and sys.argv[1]:
+    with app.app_context():
+        handle_summarize_course(int(sys.argv[1]))
+else:
+    print("Start summarizing reviews of all courses...")
+    with app.app_context():
+        get_summary_of_all_courses()
